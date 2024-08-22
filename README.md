@@ -1,1 +1,1 @@
-Global map that shows you the temperature and humidity where you click,in the momento when you click.
+Interactive global map displaying the temperature and humidity at the location you click, updated in real-time.
