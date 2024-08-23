@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from datetime import datetime
-from meteostat import Point, Hourly
+from meteostat import Point, Hourly, Stations
 import pandas as pd
 from io import StringIO
 
@@ -10,61 +10,67 @@ def obtener_datos_meteorologicos(lat, lon, alt, start, end):
     locacion = Point(lat, lon)
     data = Hourly(locacion, start, end)
     data = data.fetch()
-    
-    print(f"Datos obtenidos de la API: {data}")
-    
+
+    # Create a Stations object
+    stations = Stations()
+
+    # Get nearby stations
+    nearby_stations = stations.nearby(lat, lon)
+
+    # Fetch the first station from the result
+    first_station = nearby_stations.fetch(1)
+
+    # Check if there's any station available
+    if not first_station.empty:
+        # Get the first station's details
+        first_station_id = first_station.index[0]
+        first_station_name = first_station.loc[first_station_id, 'name']
+    else:
+        first_station_name = "Nombre de la estación no disponible"
+
     if data.empty:
-        return None, None
+        return None, None, None, first_station_name
     
     if 'rhum' in data.columns:
         ultima_hora = data.tail(1)
         temp = ultima_hora['temp'].values[0]
         rhum = ultima_hora['rhum'].values[0]
-        return temp, rhum
+        prcp = ultima_hora['prcp'].values[0] if 'prcp' in data.columns else 'N/A'
+        return temp, rhum, prcp, first_station_name
     else:
         column_info = f"Available columns in weather data:\n{data.columns}"
         temp_data = data[['tavg', 'tmin', 'tmax']].tail(1).to_string()
-        return column_info, temp_data
+        return column_info, temp_data, 'N/A', first_station_name
 
 @app.route('/add_marker')
 def add_marker():
     try:
         lat = float(request.args.get('lat'))
         lon = float(request.args.get('lon'))
-        print(f'Recibido lat: {lat}, lon: {lon}')  # Añade esto para depuración
         start = datetime(2024, 8, 19)
         end = datetime(2024, 8, 20)
-        temp, rhum = obtener_datos_meteorologicos(lat, lon, 70, start, end)
+        temp, rhum, prcp, station_name = obtener_datos_meteorologicos(lat, lon, 70, start, end)
 
-        if temp is None and rhum is None:
+        if temp is None and rhum is None and prcp is None:
             return jsonify({'error': 'Información no encontrada'}), 404
 
         current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        if rhum is not None:
-            return jsonify({'temp': temp, 'rhum': rhum, 'time': current_datetime})
-        else:
-            return jsonify({
-                'station_name': 'First Station Name: Potosi',
-                'column_info': temp,
-                'temperature_data': rhum,
-                'time': current_datetime
-            })
+        return jsonify({'temp': temp, 'rhum': rhum, 'prcp': prcp, 'station_name': station_name, 'time': current_datetime})
 
     except Exception as e:
         print(f'Error: {e}')
         return jsonify({'error': 'Internal server error'}), 500
 
-
 @app.route('/')
 def index():
     current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    #Data ejemplo
-    data_csv = f"""Latitude,Longitude,Temperature,Humidity,Time
-    34.05,-118.25,25.0,60,{current_datetime}
-    40.71,-74.01,20.0,70,{current_datetime}
-    37.77,-122.42,18.0,80,{current_datetime}
+    # Data ejemplo
+    data_csv = f"""Latitude,Longitude,Temperature,Humidity,Precipitation,Time
+    34.05,-118.25,25.0,60,0.0,{current_datetime}
+    40.71,-74.01,20.0,70,0.1,{current_datetime}
+    37.77,-122.42,18.0,80,0.0,{current_datetime}
     """
 
     data = pd.read_csv(StringIO(data_csv))
@@ -105,13 +111,15 @@ def index():
 
             markers.forEach(function(marker) {{
                 L.circleMarker([marker.Latitude, marker.Longitude], {{
-                    radius:  8,
+                    radius: 8,
                     color: 'blue',
                     fill: true,
                     fillColor: 'blue'
                 }}).bindPopup(
+                    'Station: ' + (marker.Station || 'N/A') + '<br>' +
                     'Temperature: ' + marker.Temperature + ' °C<br>' +
                     'Humidity: ' + marker.Humidity + ' %<br>' +
+                    'Precipitation: ' + marker.Precipitation + ' mm<br>' +
                     'Time: ' + marker.Time
                 ).addTo(map);
             }});
@@ -121,24 +129,32 @@ def index():
                 var lon = e.latlng.lng;
                 console.log('Clicked at: ' + lat + ', ' + lon);
                 var url = '/add_marker?lat=' + lat + '&lon=' + lon;
-                fetch(url).then(response => response.json()).then(data => {{
-                    if (data.error) {{
-                        alert(data.error);
-                    }} else if (data.rhum) {{
-                        var popupText = 'Temperature: ' + data.temp + ' °C<br>Humidity: ' + data.rhum + ' %<br>Time: ' + data.time;
-                    }} else {{
-                        var popupText = 'Station: ' + data.station_name + '<br>' +
-                                        'Column Info: ' + data.column_info.replace(/\\n/g, '<br>') + '<br>' +
-                                        'Temperature Data: ' + data.temperature_data.replace(/\\n/g, '<br>') + '<br>' +
+                fetch(url)
+                    .then(response => response.json())
+                    .then(data => {{
+                        console.log('Data received:', data);
+                        var popupText;
+                        if (data.temp !== undefined && data.rhum !== undefined) {{
+                            popupText = 'Station: ' + (data.station_name ) + '<br>' +
+                                        'Temperature: ' + data.temp + ' °C<br>' +
+                                        'Humidity: ' + data.rhum + ' %<br>' +
+                                        'Precipitation: ' + data.prcp + ' mm<br>' +
                                         'Time: ' + data.time;
-                    }}
-                    L.circleMarker([lat, lon], {{
-                        radius:  5,  // Tamaño fijo para todos los círculos
-                        color: 'blue',
-                        fill: true,
-                        fillColor: 'blue'
-                    }}).bindPopup(popupText).addTo(map);
-                }}).catch(error => console.error('Error:', error));
+                        }} else {{
+                            popupText = 'No hay datos disponibles<br>' +
+                                        'Station: ' + (data.station_name || 'N/A') + '<br>' +
+                                        'Column Info: ' + (data.column_info || 'N/A').replace(/\\n/g, '<br>') + '<br>' +
+                                        'Temperature Data: ' + (data.temperature_data || 'N/A').replace(/\\n/g, '<br>') + '<br>' +
+                                        'Time: ' + data.time;
+                        }}
+                        L.circleMarker([lat, lon], {{
+                            radius: 5,
+                            color: 'blue',
+                            fill: true,
+                            fillColor: 'blue'
+                        }}).bindPopup(popupText).addTo(map);
+                    }})
+                    .catch(error => console.error('Error:', error));
             }}
 
             map.on('click', addMarker);
