@@ -1,12 +1,13 @@
 from flask import Flask, request, jsonify
-from datetime import datetime
+from datetime import datetime, timedelta
 from meteostat import Point, Hourly, Stations
 import pandas as pd
 from io import StringIO
+import numpy as np  # Importar numpy
 
 app = Flask(__name__)
 
-def obtener_datos_meteorologicos(lat, lon, alt, start, end):
+def obtener_datos_meteorologicos(lat, lon, start, end):
     locacion = Point(lat, lon)
     data = Hourly(locacion, start, end)
     data = data.fetch()
@@ -29,34 +30,46 @@ def obtener_datos_meteorologicos(lat, lon, alt, start, end):
         first_station_name = "Nombre de la estación no disponible"
 
     if data.empty:
-        return None, None, None, first_station_name
+        return None, None, None, None, first_station_name
     
     if 'rhum' in data.columns:
-        ultima_hora = data.tail(1)
+        ultima_hora = data.sort_values('time').tail(1)
         temp = ultima_hora['temp'].values[0]
+        pres = ultima_hora['pres'].values[0] if 'pres' in data.columns else np.nan
         rhum = ultima_hora['rhum'].values[0]
-        prcp = ultima_hora['prcp'].values[0] if 'prcp' in data.columns else 'N/A'
-        return temp, rhum, prcp, first_station_name
+        prcp = ultima_hora['prcp'].values[0] if 'prcp' in data.columns else np.nan
+        return temp, rhum, prcp, pres, first_station_name
     else:
         column_info = f"Available columns in weather data:\n{data.columns}"
         temp_data = data[['tavg', 'tmin', 'tmax']].tail(1).to_string()
-        return column_info, temp_data, 'N/A', first_station_name
+        return column_info, temp_data, np.nan, first_station_name
 
 @app.route('/add_marker')
 def add_marker():
     try:
         lat = float(request.args.get('lat'))
         lon = float(request.args.get('lon'))
-        start = datetime(2024, 8, 19)
-        end = datetime(2024, 8, 20)
-        temp, rhum, prcp, station_name = obtener_datos_meteorologicos(lat, lon, 70, start, end)
+        start = datetime.now() - timedelta(days=1)
+        end = datetime.now()
+
+        temp, rhum, prcp, pres, station_name = obtener_datos_meteorologicos(lat, lon, start, end)
 
         if temp is None and rhum is None and prcp is None:
             return jsonify({'error': 'Información no encontrada'}), 404
 
         current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        return jsonify({'temp': temp, 'rhum': rhum, 'prcp': prcp, 'station_name': station_name, 'time': current_datetime})
+        # Convertir NaN a 0 excepto para temperatura
+        response = {
+            'temp': temp,
+            'rhum': 0 if np.isnan(rhum) else rhum,
+            'prcp': 0 if np.isnan(prcp) else prcp,
+            'pres': 0 if np.isnan(pres) else pres,
+            'station_name': station_name,
+            'time': current_datetime
+        }
+
+        return jsonify(response)
 
     except Exception as e:
         print(f'Error: {e}')
@@ -139,6 +152,7 @@ def index():
                                         'Temperature: ' + data.temp + ' °C<br>' +
                                         'Humidity: ' + data.rhum + ' %<br>' +
                                         'Precipitation: ' + data.prcp + ' mm<br>' +
+                                        'Presion: ' + data.pres + ' mm<br>' +
                                         'Time: ' + data.time;
                         }} else {{
                             popupText = 'No hay datos disponibles<br>' +
